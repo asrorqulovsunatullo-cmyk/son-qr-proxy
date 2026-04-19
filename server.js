@@ -3,97 +3,76 @@ const cors = require("cors");
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+const GEMINI_KEY = process.env.GEMINI_API_KEY;
 
-// Anthropic API kalitingiz — Render.com da Environment Variable sifatida kiriting
-const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
-
-if (!ANTHROPIC_KEY) {
-  console.warn("⚠️  ANTHROPIC_API_KEY environment variable topilmadi!");
+if (!GEMINI_KEY) {
+  console.warn("⚠️  GEMINI_API_KEY environment variable topilmadi!");
 }
 
-// CORS — barcha manzildan ruxsat (kerak bo'lsa domenni cheklang)
 app.use(cors());
-app.use(express.json({ limit: "20mb" })); // rasmlar uchun limit katta
+app.use(express.json({ limit: "20mb" }));
 
-// Sog'liq tekshiruvi
 app.get("/", (req, res) => {
   res.json({ status: "ok", message: "Son-QR Proxy Server ishlayapti ✅" });
 });
 
-// Asosiy proxy endpoint
 app.post("/analyze", async (req, res) => {
   try {
     const { base64, mediaType } = req.body;
+    if (!base64) return res.status(400).json({ error: "base64 rasm kerak" });
 
-    if (!base64) {
-      return res.status(400).json({ error: "base64 rasm talab qilinadi" });
-    }
-
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": ANTHROPIC_KEY,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 500,
-        system: `You are an expert OCR number extractor. Find ALL numbers and numeric codes in the image.
-
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              {
+                inline_data: {
+                  mime_type: mediaType || "image/jpeg",
+                  data: base64
+                }
+              },
+              {
+                text: `You are an expert OCR number extractor. Find ALL numbers and numeric codes in the image.
 RULES:
-- Extract ANY sequence containing digits: IDs, codes, cell codes like "02-23", barcodes, dates, times, prices, measurements
-- Long digit strings like "146004940107018755" are valid
-- If multiple numbers exist, pick the most prominent one as primary
+- Extract ANY sequence with digits: IDs, codes like "02-23", barcodes, dates, prices, measurements
+- Long numbers like "146004940107018755" are valid
+- Pick the most prominent number as primary
 - NEVER return null if any digit is visible
-- Ignore surrounding text/language, extract the number/code
 
-Return ONLY this JSON (no markdown):
-{"number":"primary_value","raw":"exact text seen","all":["all","numbers","found"]}`,
-        messages: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "image",
-                source: {
-                  type: "base64",
-                  media_type: mediaType || "image/jpeg",
-                  data: base64,
-                },
-              },
-              {
-                type: "text",
-                text: "Extract ALL numbers and codes from this image. JSON only.",
-              },
-            ],
-          },
-        ],
-      }),
-    });
+Return ONLY raw JSON, no markdown:
+{"number":"primary_value","raw":"exact text seen","all":["all","numbers","found"]}`
+              }
+            ]
+          }],
+          generationConfig: { temperature: 0, maxOutputTokens: 300 }
+        })
+      }
+    );
 
     if (!response.ok) {
-      const errData = await response.json().catch(() => ({}));
+      const e = await response.json().catch(() => ({}));
       return res.status(response.status).json({
-        error: errData?.error?.message || `Anthropic xatosi: ${response.status}`,
+        error: e?.error?.message || `Gemini xatosi: ${response.status}`
       });
     }
 
     const data = await response.json();
-    const txt = data.content?.map((b) => b.text || "").join("") || "{}";
+    const txt = data.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
     const match = txt.replace(/```json|```/g, "").trim().match(/\{[\s\S]*\}/);
-
-    if (!match) {
-      return res.status(500).json({ error: "JSON tahlil qilishda xato" });
-    }
+    if (!match) return res.status(500).json({ error: "JSON tahlil qilishda xato" });
 
     res.json(JSON.parse(match[0]));
+
   } catch (err) {
-    console.error("Server xatosi:", err);
+    console.error("Xato:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`✅ Proxy server port ${PORT} da ishlayapti`);
+  console.log(`✅ Server port ${PORT} da ishlayapti`);
 });
